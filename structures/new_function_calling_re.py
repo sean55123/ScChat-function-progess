@@ -19,7 +19,7 @@ import regex as re
 import gseapy as gp
 import base64
 import requests
-from Tools import function_descriptions
+from functions.Tools import function_descriptions
 
 # Set basic configuration
 sc.set_figure_params(dpi=100)
