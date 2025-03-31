@@ -295,8 +295,8 @@ def extract_genes(data):
 def get_rag():
     """Retrieve marker genes using Neo4j graph database."""
     # Initialize Neo4j connection
-    uri = "bolt://localhost:7687"
-    driver = GraphDatabase.driver(uri, auth=("neo4j", ""))
+    uri = "bolt://localhost:7689"
+    driver = GraphDatabase.driver(uri, auth=("neo4j", "37754262"))
     
     # Load specification from JSON
     specification = None
@@ -345,8 +345,8 @@ def get_rag():
 
 def get_subtypes(cell_type):
     """Get subtypes of a given cell type using Neo4j."""
-    uri = "bolt://localhost:7687"
-    driver = GraphDatabase.driver(uri, auth=("neo4j", ""))
+    uri = "bolt://localhost:7689"
+    driver = GraphDatabase.driver(uri, auth=("neo4j", "37754262"))
     
     # Load specification for database info
     specification = None
@@ -386,6 +386,121 @@ def get_subtypes(cell_type):
         driver.close()
     
     return subtypes_data
+
+def unified_cell_type_handler(cell_type):
+    """
+    Standardizes cell type names with proper handling for special cases.
+    
+    Parameters:
+    -----------
+    cell_type : str
+        The cell type string to process
+    
+    Returns:
+    --------
+    str
+        Standardized cell type name suitable for file paths and database matching
+    """
+    # Dictionary of known cell types with their standardized forms
+    known_cell_types = {
+        # One-word cell types (already plural, don't add "cells")
+        "platelet": "Platelets",
+        "platelets": "Platelets",
+        "lymphocyte": "Lymphocytes",
+        "lymphocytes": "Lymphocytes",
+        
+        # Three-word cell types (specific capitalization)
+        "natural killer cell": "Natural killer cells",
+        "natural killer cells": "Natural killer cells",
+        "plasmacytoid dendritic cell": "Plasmacytoid dendritic cells",
+        "plasmacytoid dendritic cells": "Plasmacytoid dendritic cells"
+    }
+    
+    # Clean and normalize the input
+    clean_type = cell_type.lower().strip()
+    if clean_type.endswith(' cells'):
+        clean_type = clean_type[:-6].strip()
+    elif clean_type.endswith(' cell'):
+        clean_type = clean_type[:-5].strip()
+    
+    # Check if it's a known cell type
+    if clean_type in known_cell_types:
+        return known_cell_types[clean_type]
+    
+    # Handle based on word count
+    words = clean_type.split()
+    if len(words) == 1:
+        # Check if it's already plural
+        if words[0].endswith('s') and not words[0].endswith('ss'):
+            # Already plural, just return as is (e.g., "Platelets")
+            return words[0].capitalize()
+        else:
+            # Add "cells" to singular forms (e.g., "Monocyte cells")
+            return f"{words[0].capitalize()} cells"
+    
+    elif len(words) == 2:
+        # Special case for cell types like "T cell", "B cell"
+        special_first_words = ['t', 'b', 'nk', 'cd4', 'cd8']
+        
+        if words[0].lower() in special_first_words:
+            # Preserve special capitalization
+            return f"{words[0].upper()} cells"
+        else:
+            # Standard two-word handling
+            return f"{words[0].capitalize()} {words[1].capitalize()} cells"
+    
+    elif len(words) >= 3:
+        # For three or more words, only capitalize the first word
+        return f"{words[0].capitalize()} {' '.join(words[1:])} cells"
+    
+    # Fallback
+    return f"{cell_type} cells"
+
+def standardize_cell_type(cell_type):
+    """
+    Standardize cell type strings for flexible matching.
+    Handles multi-word cell types, singular/plural forms, and capitalization.
+    """
+    # Clean and normalize the input
+    clean_type = cell_type.lower().strip()
+    if clean_type.endswith(' cells'):
+        clean_type = clean_type[:-6].strip()
+    elif clean_type.endswith(' cell'):
+        clean_type = clean_type[:-5].strip()
+    
+    # Return the standardized base form
+    return clean_type
+
+def get_possible_cell_types(cell_type):
+    """
+    Generate all possible forms of a cell type for flexible matching.
+    """
+    # Get standardized base form
+    base_form = standardize_cell_type(cell_type)
+    
+    # Generate variations with proper capitalization
+    result = unified_cell_type_handler(cell_type)
+    
+    # Create variations based on the correct standardized form
+    words = base_form.split()
+    possible_types = [base_form]  # Add the base form
+    
+    # Add the properly standardized result and its variants
+    possible_types.append(result)
+    
+    # Add variations with and without "cell" or "cells"
+    if not result.lower().endswith("cells"):
+        possible_types.append(f"{result} cells")
+    
+    if len(words) == 1:
+        # For single words, add with/without "s" variations
+        if words[0].endswith('s'):
+            possible_types.append(words[0][:-1])  # Without 's'
+        else:
+            possible_types.append(f"{words[0]}s")  # With 's'
+    
+    # Remove duplicates while preserving order
+    return list(dict.fromkeys(possible_types))
 
 def filter_existing_genes(adata, gene_list):
     """Filter genes to only those present in the dataset, handling non-unique indices."""
@@ -443,7 +558,7 @@ def preprocess_data(adata, sample_mapping=None):
     
     return adata
 
-def perform_clustering(adata, resolution=0.5, random_state=42):
+def perform_clustering(adata, resolution=2, random_state=42):
     """Perform UMAP and Leiden clustering with consistent parameters."""
     sc.tl.umap(adata, random_state=random_state)
     sc.tl.leiden(adata, resolution=resolution, random_state=random_state)
@@ -609,7 +724,7 @@ def save_analysis_results(adata, prefix, leiden_key='leiden', save_umap=True,
         dot_plot_data.to_csv(f"{prefix}_dot_plot_data.csv", index=False)
 
 # Main pipeline functions
-def generate_umap(resolution=0.5):
+def generate_umap(resolution=2):
     """Generate initial UMAP clustering on the full dataset."""
     global sample_mapping
     
@@ -694,21 +809,16 @@ def generate_umap(resolution=0.5):
 def process_cells(adata, cell_type, resolution=None):
     """Process specific cell type with consistent workflow."""
     if resolution is None:
-        resolution = 0.8  # Default higher resolution for subtype clustering
+        resolution = 1  # Default higher resolution for subtype clustering
     
-    # Standardize cell type names for flexible matching
-    cell_type_base = cell_type.split()[0]
-    cell_type_cap = cell_type_base.capitalize()
-    possible_types = [
-        f"{cell_type_cap} cells",
-        f"{cell_type_cap} cell",
-        cell_type_cap
-    ]
+    # Get all possible variations of the cell type for matching
+    possible_types = get_possible_cell_types(cell_type)
+    standardized_name = unified_cell_type_handler(cell_type)
     
     # Filter cells based on cell type with flexible matching
     mask = adata.obs['cell_type'].isin(possible_types)
     if mask.sum() == 0:
-        print(f"WARNING: No cells found with cell type matching '{cell_type_cap}'")
+        print(f"WARNING: No cells found with cell type matching any of these variations: {possible_types}")
         return None, None, None
     
     filtered_cells = adata[mask].copy()
@@ -719,19 +829,21 @@ def process_cells(adata, cell_type, resolution=None):
     filtered_cells = perform_clustering(filtered_cells, resolution=resolution)
     
     # Create ranking key based on cell type
-    rank_key = f"rank_genes_{cell_type_base.lower()}"
+    # Use standardized base form for key naming
+    base_form = standardize_cell_type(cell_type).replace(' ', '_').lower()
+    rank_key = f"rank_genes_{base_form}"
     
     # Rank genes for the filtered cells
     filtered_cells = rank_genes(filtered_cells, key_added=rank_key)
     
     # Get markers and create marker-specific sub-AnnData if needed
     markers = get_subtypes(cell_type)
-    markers_tree = markers.copy()  # Fix: Use copy() method instead of copy
+    markers_tree = markers.copy()
     markers_list = extract_genes(markers)
     
     # Check if we have enough markers
     if not markers_list:
-        print(f"WARNING: No marker genes found for {cell_type_cap}. Using general ranking.")
+        print(f"WARNING: No marker genes found for {standardized_name}. Using general ranking.")
         # Use general ranking instead
         top_genes_df = rank_ordering(filtered_cells, key=rank_key, n_genes=25)
         
@@ -744,7 +856,6 @@ def process_cells(adata, cell_type, resolution=None):
         sc.tl.dendrogram(filtered_cells, groupby='leiden')
         
         # Save data
-        standardized_name = f"{cell_type_cap} cells"
         save_analysis_results(
             filtered_cells,
             prefix=f"process_cell_data/{standardized_name}",
@@ -762,6 +873,9 @@ def process_cells(adata, cell_type, resolution=None):
         
         return gene_dict, filtered_cells, markers_tree
     
+    # Rest of the function remains the same, but using standardized_name instead of 
+    # the previous f"{cell_type_cap} cells" format for file paths and variable names
+    
     # Create marker-specific AnnData
     filtered_markers, marker_list = create_marker_anndata(filtered_cells, markers_list)
     
@@ -773,7 +887,7 @@ def process_cells(adata, cell_type, resolution=None):
     else:
         try:
             # Rank marker genes
-            marker_key = f"rank_markers_{cell_type_base.lower()}"
+            marker_key = f"rank_markers_{base_form}"
             filtered_markers = rank_genes(filtered_markers, key_added=marker_key)
             
             # Copy marker ranking to filtered dataset
@@ -796,7 +910,6 @@ def process_cells(adata, cell_type, resolution=None):
     sc.tl.dendrogram(filtered_cells, groupby='leiden')
     
     # Save data
-    standardized_name = f"{cell_type_cap} cells"
     save_analysis_results(
         filtered_cells,
         prefix=f"process_cell_data/{standardized_name}",
@@ -818,9 +931,8 @@ def process_cells(adata, cell_type, resolution=None):
 def label_clusters(annotation_result, cell_type, adata):
     """Label clusters with consistent cell type handling."""
     # Standardize cell type names
-    cell_type_base = cell_type.split()[0]
-    cell_type_cap = cell_type_base.capitalize()
-    standardized_cell_type = f"{cell_type_cap} cells"
+    standardized_name = unified_cell_type_handler(cell_type)
+    base_form = standardize_cell_type(cell_type).lower()
     
     try:
         adata = adata.copy()
@@ -833,7 +945,7 @@ def label_clusters(annotation_result, cell_type, adata):
         map2 = {str(key): value for key, value in map2.items()}
         
         # Apply annotations - different handling for overall cells vs specific cell types
-        if cell_type_cap.lower() == "overall":
+        if base_form == "overall":
             # For overall cells, directly apply annotations to the main dataset
             adata.obs['cell_type'] = 'Unknown'
             for group, cell_type_value in map2.items():
@@ -842,13 +954,13 @@ def label_clusters(annotation_result, cell_type, adata):
             # Save annotated data
             save_analysis_results(
                 adata,
-                prefix=f"umaps/{standardized_cell_type}",
+                prefix=f"umaps/{standardized_name}",
                 save_dendrogram=False,
                 save_dotplot=False
             )
             
             # Save annotated adata
-            fname = f'annotated_adata/{standardized_cell_type}_annotated_adata.pkl'
+            fname = f'annotated_adata/{standardized_name}_annotated_adata.pkl'
             with open(fname, "wb") as file:
                 pickle.dump(adata, file)
                 
@@ -865,13 +977,13 @@ def label_clusters(annotation_result, cell_type, adata):
             # Save annotated data
             save_analysis_results(
                 specific_cells,
-                prefix=f"umaps/{standardized_cell_type}",
+                prefix=f"umaps/{standardized_name}",
                 save_dendrogram=False,
                 save_dotplot=False
             )
             
             # Save annotated adata
-            fname = f'annotated_adata/{standardized_cell_type}_annotated_adata.pkl'
+            fname = f'annotated_adata/{standardized_name}_annotated_adata.pkl'
             with open(fname, "wb") as file:
                 pickle.dump(specific_cells, file)
                 
@@ -882,99 +994,104 @@ def label_clusters(annotation_result, cell_type, adata):
         
     return adata
 
-
 if __name__ == "__main__":
     clear_directory("annotated_adata")
     clear_directory("basic_data")
     clear_directory("umaps")
     clear_directory("process_cell_data")  
     clear_directory("figures") 
-    gene_dict, marker_tree, adata = generate_umap()  
+    # gene_dict, marker_tree, adata = generate_umap()  
     # pd.to_pickle(marker_tree, "marker_tree.pkl")
     # pd.to_pickle(gene_dict, "gene_dict.pkl")
 
-    input_msg =(f"Top genes details: {gene_dict}. "
-                f"Markers: {marker_tree}. ")
+    # input_msg =(f"Top genes details: {gene_dict}. "
+    #             f"Markers: {marker_tree}. ")
     
-    messages = [
-        SystemMessage(content="""
-            You are a bioinformatics researcher that can do the cell annotation.
-            The following are the data and its decription that you will receive.
-            * 1. Gene list: top 25 cells arragned from the highest to lowest expression levels in each cluster.
-            * 2. Marker tree: marker genes that can help annotating cell type.           
+    # messages = [
+    #     SystemMessage(content="""
+    #         You are a bioinformatics researcher that can do the cell annotation.
+    #         The following are the data and its decription that you will receive.
+    #         * 1. Gene list: top 25 cells arragned from the highest to lowest expression levels in each cluster.
+    #         * 2. Marker tree: marker genes that can help annotating cell type.           
             
-            Identify the cell type for each cluster using the following markers in the marker tree.
-            This means you will have to use the markers to annotate the cell type in the gene list. 
-            Provide your result as the most specific cell type that is possible to be determined.
+    #         Identify the cell type for each cluster using the following markers in the marker tree.
+    #         This means you will have to use the markers to annotate the cell type in the gene list. 
+    #         Provide your result as the most specific cell type that is possible to be determined.
             
-            Provide your output in the following example format:
-            Analysis: group_to_cell_type = {'0': 'Cell type','1': 'Cell type','2': 'Cell type','3': 'Cell type','4': 'Cell type', ...}.
+    #         Provide your output in the following example format:
+    #         Analysis: group_to_cell_type = {'0': 'Cell type','1': 'Cell type','2': 'Cell type','3': 'Cell type','4': 'Cell type', ...}.
             
-            Strictly adhere to follwing rules:
-            * 1. Adhere to the dictionary format and do not include any additional words or explanations.
-            * 2. The cluster number in the result dictionary must be arranged with raising power.
-            """),
-        HumanMessage(content=input_msg)
-    ]
-    model = ChatOpenAI(
-        model="gpt-4o",
-        temperature=0
-    )
-    results = model.invoke(messages)
-    annotation_result = results.content
-    print(annotation_result)
+    #         Strictly adhere to follwing rules:
+    #         * 1. Adhere to the dictionary format and do not include any additional words or explanations.
+    #         * 2. The cluster number in the result dictionary must be arranged with raising power.
+    #         """),
+    #     HumanMessage(content=input_msg)
+    # ]
+    # model = ChatOpenAI(
+    #     model="gpt-4o",
+    #     temperature=0
+    # )
+    # results = model.invoke(messages)
+    # annotation_result = results.content
+    # print(annotation_result)
 
 
-    cell_type = "Overall cells"
-    adata = label_clusters(annotation_result, cell_type, adata)
+    # cell_type = "Overall cells"
+    # adata = label_clusters(annotation_result, cell_type, adata)
+    # print(adata.obs["cell_type"])
     # display_umap(cell_type)
     # display_processed_umap(cell_type)
-    
-    # with open("Overall cells_annotated_adata.pkl", "rb") as file:
-    #     adata = pd.read_pickle(file)
-    # print(adata.obs["cell_type"])
-    
+    # pd.to_pickle(marker_tree, "marker_tree.pkl")
+    # pd.to_pickle(gene_dict, "gene_dict.pkl")
+    # pd.to_pickle(adata, "adata.pkl")
 
-    print("\n" + "="*50 + "\n")
-    print("Start to focus on T cell")
-    print("\n" + "="*50 + "\n")
+    # print("\n" + "="*50 + "\n")
+    # print("Start to do ")
+    # print("\n" + "="*50 + "\n")
     
-    spec_cell_type = "T cells"
-    gene_dict, adata, marker_tree = process_cells(adata, spec_cell_type)
+    annotation_result = ['Platelets', 'Plasmacytoid dendritic cells', 'Natural killer cells']
     
-    model = ChatOpenAI(
-        model="gpt-4o",
-        temperature=0
-    )
-    input_msg =(f"Top genes details: {gene_dict}. "
-                f"Markers: {marker_tree}. ")
-    messages = [
-        SystemMessage(content="""
-            You are a bioinformatics researcher that can do the cell annotation.
-            The following are the data and its decription that you will receive.
-            * 1. Gene list: top 25 cells arragned from the highest to lowest expression levels in each cluster.
-            * 2. Marker tree: marker genes that can help annotating cell type.           
-            
-            Identify the cell type for each cluster using the following markers in the marker tree.
-            This means you will have to use the markers to annotate the cell type in the gene list. 
-            Provide your result as the most specific cell type that is possible to be determined.
-            
-            Provide your output in the following example format:
-            Analysis: group_to_cell_type = {'0': 'Cell type','1': 'Cell type','2': 'Cell type','3': 'Cell type','4': 'Cell type', ...}.
-            
-            Strictly adhere to follwing rules:
-            * 1. Adhere to the dictionary format and do not include any additional words or explanations.
-            * 2. The cluster number in the result dictionary must be arranged with raising power.
-            """),
-        HumanMessage(content=input_msg)
-    ]
+    for cell_type in annotation_result:
+        with open("gene_dict.pkl", "rb") as file:
+            gene_dict = pd.read_pickle(file)
+        with open("marker_tree.pkl", "rb") as file:
+            marker_tree = pd.read_pickle(file)    
+        with open("adata.pkl", "rb") as file:
+            adata = pd.read_pickle(file)
+        gene_dict, adata, marker_tree = process_cells(adata, cell_type)
+        
+        model = ChatOpenAI(
+            model="gpt-4o",
+            temperature=0
+        )
+        input_msg =(f"Top genes details: {gene_dict}. "
+                    f"Markers: {marker_tree}. ")
+        messages = [
+            SystemMessage(content="""
+                You are a bioinformatics researcher that can do the cell annotation.
+                The following are the data and its decription that you will receive.
+                * 1. Gene list: top 25 cells arragned from the highest to lowest expression levels in each cluster.
+                * 2. Marker tree: marker genes that can help annotating cell type.           
+                
+                Identify the cell type for each cluster using the following markers in the marker tree.
+                This means you will have to use the markers to annotate the cell type in the gene list. 
+                Provide your result as the most specific cell type that is possible to be determined.
+                
+                Provide your output in the following example format:
+                Analysis: group_to_cell_type = {'0': 'Cell type','1': 'Cell type','2': 'Cell type','3': 'Cell type','4': 'Cell type', ...}.
+                
+                Strictly adhere to follwing rules:
+                * 1. Adhere to the dictionary format and do not include any additional words or explanations.
+                * 2. The cluster number in the result dictionary must be arranged with raising power.
+                """),
+            HumanMessage(content=input_msg)
+        ]
 
-    results = model.invoke(messages)
-    annotation_result = results.content
-    print(annotation_result)
-    adata = label_clusters(annotation_result, spec_cell_type, adata)
-    # display_umap(spec_cell_type)
-    # display_processed_umap(spec_cell_type)
-    
-    print(adata.obs["cell_type"])
+        results = model.invoke(messages)
+        annotation_result = results.content
+        adata = label_clusters(annotation_result, cell_type, adata)
+        # display_umap(spec_cell_type)
+        # display_processed_umap(spec_cell_type)
+        
+        adata.obs["cell_type"].to_csv(f"{cell_type}_result.csv")
     
